@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>展示混雑状況マップ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* カスタムスタイルがあればここに追加 */
+        .indicator {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            position: absolute;
+            transform: translate(-50%, -50%); /* 中央に配置 */
+            border: 1px solid #333;
+            box-shadow: 0 0 5px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: white;
+            font-weight: bold;
+        }
+        .indicator-tooltip {
+            visibility: hidden;
+            width: 120px;
+            background-color: black;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 5px 0;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%; /* インジケータの上に表示 */
+            left: 50%;
+            margin-left: -60px; /* ツールチップを中央に */
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .indicator-tooltip::after {
+            content: "";
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: black transparent transparent transparent;
+        }
+        .indicator:hover .indicator-tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+        .floor-plan-container {
+            position: relative; /* For absolute positioning of indicators */
+            margin-bottom: 2rem;
+            border: 1px solid #ccc;
+            border-radius: 0.5rem;
+            overflow: hidden; /* Ensures indicators don't spill out if image has rounded corners */
+        }
+        .floor-plan-img {
+            display: block; /* Removes extra space below image */
+            max-width: 100%;
+            height: auto;
+        }
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Allows clicks to pass through to image if needed */
+        }
+        .indicator-dot { /* Simplified indicator, color will be set by JS */
+            pointer-events: auto; /* Allow hover on indicators */
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 sm:p-8 font-sans">
+    <div class="container mx-auto max-w-4xl bg-white p-6 rounded-lg shadow-xl">
+        <header class="mb-6 text-center">
+            <h1 class="text-3xl font-bold text-gray-700">展示混雑状況マップ</h1>
+        </header>
+
+        <div class="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg text-center">
+            <button id="loadDataBtn" class="w-full sm:w-auto inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+                </svg>
+                表示更新
+            </button>
+            <p id="statusMessage" class="mt-2 text-sm text-gray-600"></p>
+        </div>
+
+        <!-- Classroom A -->
+        <section class="mb-8">
+            <h2 class="text-2xl font-semibold text-gray-700 mb-3 border-b pb-2">展示教室</h2>
+            <div id="classroomAContainer" class="floor-plan-container">
+                <img id="imageA" src="https://placehold.co/800x600/e2e8f0/a0aec0?text=A教室の見取図+(画像を指定してください)" alt="A教室 見取図" class="floor-plan-img">
+                <div id="overlayA" class="overlay"></div>
+            </div>
+        </section>
+
+        <!-- Classroom B -->
+        <section>
+            <h2 class="text-2xl font-semibold text-gray-700 mb-3 border-b pb-2">模型教室</h2>
+            <div id="classroomBContainer" class="floor-plan-container">
+                <img id="imageB" src="https://placehold.co/800x600/e2e8f0/a0aec0?text=B教室の見取図+(画像を指定してください)" alt="B教室 見取図" class="floor-plan-img">
+                <div id="overlayB" class="overlay"></div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        // グローバルスコープにパースされたデータを保持
+        let globalParsedData = null;
+
+        // ★★★ GoogleスプレッドシートのCSV公開URLをここに直接記述 ★★★
+        const SPREADSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSSKaPrGGHvbeW-FVVvoAqRl6XJHNwyT4f2vh5GERdt4GdqjAEm486uIALvwuupYBvjVzLvxHLE93IM/pub?gid=0&single=true&output=csv"; // 例: "https://docs.google.com/spreadsheets/d/your_sheet_id/export?format=csv&gid=your_gid"
+
+        // DOM要素の参照
+        const loadDataBtn = document.getElementById('loadDataBtn');
+        const statusMessage = document.getElementById('statusMessage');
+        
+        const imageA = document.getElementById('imageA');
+        const overlayA = document.getElementById('overlayA');
+        const imageB = document.getElementById('imageB');
+        const overlayB = document.getElementById('overlayB');
+
+        /**
+         * 混雑レベルに基づいて色とテキストを返す関数
+         * @param {number|string} level - 混雑レベル
+         * @returns {object} { color: string, text: string }
+         */
+        function getCongestionStyle(level) {
+            const numericLevel = parseInt(level, 10);
+            if (isNaN(numericLevel)) {
+                switch (String(level).toLowerCase()) {
+                    case 'low': case '空': case '少': case '1': return { color: '#4CAF50', text: '空' }; // Green
+                    case 'medium': case '普通': case '中': case '2': return { color: '#FFEB3B', text: '中' }; // Yellow
+                    case 'high': case '混雑': case '多': case '3': return { color: '#F44336', text: '混' }; // Red
+                    case 'very high': case '大変混雑': case '激': case '4': return { color: '#B71C1C', text: '激' }; // Dark Red
+                    default: return { color: '#9E9E9E', text: '?' }; // Gray
+                }
+            }
+            switch (numericLevel) {
+                case 1: return { color: '#4CAF50', text: '空' };
+                case 2: return { color: '#FFEB3B', text: '中' };
+                case 3: return { color: '#F44336', text: '混' };
+                case 4: return { color: '#B71C1C', text: '激' };
+                default: return { color: '#9E9E9E', text: '?' };
+            }
+        }
+
+        /**
+         * CSVデータをパースする関数
+         * @param {string} csvText - CSV形式の文字列
+         * @returns {Array<Object>} パースされたデータの配列
+         */
+        function parseCSV(csvText) {
+            const lines = csvText.trim().split(/\r?\n/); // 改行コードの差異に対応
+            if (lines.length === 0) return [];
+
+            const headers = lines[0].split(',').map(h => h.trim());
+            const data = [];
+
+            for (let i = 1; i < lines.length; i++) {
+                if (lines[i].trim() === "") continue; // 空行をスキップ
+                const values = lines[i].split(',').map(v => v.trim());
+                if (values.length === headers.length) {
+                    const entry = {};
+                    headers.forEach((header, index) => {
+                        entry[header] = values[index];
+                    });
+                    data.push(entry);
+                } else {
+                    console.warn(`Skipping line ${i+1} due to mismatched column count. Expected ${headers.length}, got ${values.length}. Line: "${lines[i]}"`);
+                }
+            }
+            return data;
+        }
+        
+        /**
+         * 特定の教室のインジケータを描画する関数
+         * @param {string} classroomId - 'A' または 'B'
+         * @param {Array<Object>} data - その教室の展示データ
+         */
+        function drawIndicators(classroomId, data) {
+            const imageElement = classroomId === 'A' ? imageA : imageB;
+            const overlayElement = classroomId === 'A' ? overlayA : overlayB;
+
+            overlayElement.innerHTML = ''; // 既存のインジケータをクリア
+
+            if (!imageElement.complete || imageElement.naturalWidth === 0) {
+                console.warn(`Image for classroom ${classroomId} not fully loaded or has no dimensions. Retrying in 0.5s.`);
+                setTimeout(() => drawIndicators(classroomId, data), 500);
+                return;
+            }
+            
+            const imgWidth = imageElement.offsetWidth;
+            const imgHeight = imageElement.offsetHeight;
+
+            data.forEach(item => {
+                const x = parseFloat(item.x);
+                const y = parseFloat(item.y);
+                const congestion = item.congestion;
+                const name = item.name || 'N/A';
+
+                if (isNaN(x) || isNaN(y)) {
+                    console.warn('Invalid coordinates for item:', item);
+                    return;
+                }
+
+                const posX = (x / 100) * imgWidth;
+                const posY = (y / 100) * imgHeight;
+                
+                const style = getCongestionStyle(congestion);
+
+                const indicator = document.createElement('div');
+                indicator.className = 'indicator indicator-dot';
+                indicator.style.left = `${posX}px`;
+                indicator.style.top = `${posY}px`;
+                indicator.style.backgroundColor = style.color;
+                indicator.textContent = style.text;
+
+                const tooltip = document.createElement('span');
+                tooltip.className = 'indicator-tooltip';
+                tooltip.textContent = `${name} (${item.congestion})`;
+                indicator.appendChild(tooltip);
+
+                overlayElement.appendChild(indicator);
+            });
+        }
+
+        /**
+         * 全ての教室の表示を更新する関数
+         * @param {Array<Object>} allData - パースされた全CSVデータ
+         */
+        function renderVisualizations(allData) {
+            if (!allData) return;
+            globalParsedData = allData;
+
+            const dataA = allData.filter(d => String(d.classroom).toUpperCase() === 'A');
+            const dataB = allData.filter(d => String(d.classroom).toUpperCase() === 'B');
+
+            drawIndicators('A', dataA);
+            drawIndicators('B', dataB);
+        }
+
+        /**
+         * CSVデータをURLから取得して処理する関数
+         */
+        async function handleLoadData() {
+            const url = SPREADSHEET_CSV_URL;
+            if (!url || url === "YOUR_CSV_URL_HERE") {
+                statusMessage.textContent = 'CSVのURLが設定されていません。HTMLコードを編集してください。';
+                statusMessage.className = 'mt-2 text-sm text-red-600';
+                return;
+            }
+
+            statusMessage.textContent = 'データを読み込み中...';
+            statusMessage.className = 'mt-2 text-sm text-blue-600';
+
+            try {
+                // Google SheetsのCSVはキャッシュされることがあるため、キャッシュを回避するパラメータを追加
+                const cacheBustingUrl = `${url}&_=${new Date().getTime()}`;
+                const response = await fetch(cacheBustingUrl);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const csvText = await response.text();
+                const parsedData = parseCSV(csvText);
+                
+                if (parsedData.length === 0 && csvText.trim() !== "" && !csvText.trim().split(/\r?\n/)[0].includes(',')) {
+                     statusMessage.textContent = 'CSVデータのパースに失敗しました。ヘッダー行やカンマ区切りを確認してください。';
+                     statusMessage.className = 'mt-2 text-sm text-red-600';
+                     console.error("Failed to parse CSV or CSV is empty/malformed. Headers might be missing or not comma-separated.");
+                     return;
+                } else if (parsedData.length === 0 && csvText.trim() === "") {
+                     statusMessage.textContent = 'CSVファイルが空です。';
+                     statusMessage.className = 'mt-2 text-sm text-yellow-600';
+                     return;
+                }
+
+                const expectedColumns = ['id', 'name', 'x', 'y', 'congestion', 'classroom'];
+                if (parsedData.length > 0) {
+                    const actualColumns = Object.keys(parsedData[0]).map(c => c.toLowerCase());
+                    const missingColumns = expectedColumns.filter(ec => !actualColumns.includes(ec));
+                    if (missingColumns.length > 0) {
+                        statusMessage.textContent = `CSVの列が不足しています: ${missingColumns.join(', ')}。(推奨列: ${expectedColumns.join(', ')})`;
+                        statusMessage.className = 'mt-2 text-sm text-yellow-500'; // 警告レベルに変更
+                        console.warn("CSV data might be missing expected columns. Expected:", expectedColumns, "Actual:", actualColumns);
+                    }
+                }
+
+                renderVisualizations(parsedData);
+                statusMessage.textContent = `データを読み込み、表示を更新しました。(${parsedData.length}件)`;
+                statusMessage.className = 'mt-2 text-sm text-green-600';
+
+            } catch (error) {
+                console.error('Error loading or parsing CSV:', error);
+                statusMessage.textContent = `エラー: ${error.message}。URLとCSV形式を確認してください。`;
+                statusMessage.className = 'mt-2 text-sm text-red-600';
+                globalParsedData = null;
+                overlayA.innerHTML = '';
+                overlayB.innerHTML = '';
+            }
+        }
+        
+        // イベントリスナーの設定
+        loadDataBtn.addEventListener('click', handleLoadData);
+
+        // ウィンドウリサイズ時にインジケータを再描画
+        window.addEventListener('resize', () => {
+            if (globalParsedData) {
+                setTimeout(() => renderVisualizations(globalParsedData), 100);
+            }
+        });
+
+        // 画像の読み込み完了を待ってから初期描画
+        let imagesLoaded = 0;
+        const totalImages = 2; // 表示する画像の総数
+        function attemptInitialLoad() {
+            imagesLoaded++;
+            if (imagesLoaded === totalImages && SPREADSHEET_CSV_URL && SPREADSHEET_CSV_URL !== "YOUR_CSV_URL_HERE") {
+                handleLoadData(); // ページ読み込み時に自動でデータを読み込む
+            } else if (SPREADSHEET_CSV_URL === "YOUR_CSV_URL_HERE") {
+                 statusMessage.textContent = 'HTMLコード内のCSV URLを実際のURLに置き換えてください。';
+                 statusMessage.className = 'mt-2 text-sm text-red-600';
+            }
+        }
+
+        imageA.onload = attemptInitialLoad;
+        imageB.onload = attemptInitialLoad;
+        
+        // 画像がキャッシュされている場合など、onloadが発火しないケースも考慮
+        if (imageA.complete) attemptInitialLoad();
+        if (imageB.complete) attemptInitialLoad();
+
+
+    </script>
+</body>
+</html>
+
+
